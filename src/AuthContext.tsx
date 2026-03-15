@@ -1,13 +1,8 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
 import { User } from './types';
-import { auth, db } from './firebase';
-import { onAuthStateChanged, signOut, User as FirebaseUser } from 'firebase/auth';
-import { doc, getDoc, onSnapshot } from 'firebase/firestore';
-import { handleFirestoreError, OperationType } from './utils/firestoreErrorHandler';
 
 interface AuthContextType {
   user: User | null;
-  firebaseUser: FirebaseUser | null;
   token: string | null;
   login: (token: string, user: User) => void;
   logout: () => void;
@@ -19,7 +14,6 @@ const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [user, setUser] = useState<User | null>(null);
-  const [firebaseUser, setFirebaseUser] = useState<FirebaseUser | null>(null);
   const [token, setToken] = useState<string | null>(localStorage.getItem('token'));
   const [loading, setLoading] = useState(true);
 
@@ -29,65 +23,42 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setUser(newUser);
   };
 
-  const logout = async () => {
-    await signOut(auth);
+  const logout = () => {
     localStorage.removeItem('token');
     setToken(null);
     setUser(null);
   };
 
   const refreshUser = async () => {
-    if (!firebaseUser) {
+    if (!token) {
       setLoading(false);
       return;
     }
-    
+    setLoading(true);
     try {
-      const userDoc = await getDoc(doc(db, 'users', firebaseUser.uid));
-      if (userDoc.exists()) {
-        setUser({ uid: userDoc.id, ...userDoc.data() } as User);
+      const res = await fetch('/api/me', {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setUser(data);
+      } else {
+        logout();
       }
     } catch (err) {
-      handleFirestoreError(err, OperationType.GET, `users/${firebaseUser.uid}`);
+      console.error(err);
+      // Don't logout on network error, just stop loading
     } finally {
       setLoading(false);
     }
   };
 
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, async (fUser) => {
-      setFirebaseUser(fUser);
-      if (fUser) {
-        const idToken = await fUser.getIdToken();
-        setToken(idToken);
-        localStorage.setItem('token', idToken);
-        
-        // Listen to user profile changes in real-time
-        const userRef = doc(db, 'users', fUser.uid);
-        const unsubDoc = onSnapshot(userRef, (doc) => {
-          if (doc.exists()) {
-            setUser({ uid: doc.id, ...doc.data() } as User);
-          }
-          setLoading(false);
-        }, (error) => {
-          handleFirestoreError(error, OperationType.GET, `users/${fUser.uid}`);
-          setLoading(false);
-        });
-
-        return () => unsubDoc();
-      } else {
-        setToken(null);
-        setUser(null);
-        localStorage.removeItem('token');
-        setLoading(false);
-      }
-    });
-
-    return () => unsubscribe();
-  }, []);
+    refreshUser();
+  }, [token]);
 
   return (
-    <AuthContext.Provider value={{ user, firebaseUser, token, login, logout, refreshUser, loading }}>
+    <AuthContext.Provider value={{ user, token, login, logout, refreshUser, loading }}>
       {children}
     </AuthContext.Provider>
   );
