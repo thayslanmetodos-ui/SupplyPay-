@@ -1,7 +1,7 @@
 export type UserRole = 'operator' | 'supplier' | 'admin';
 
 export interface User {
-  id: number;
+  uid: string;
   email: string;
   role: UserRole;
   name: string;
@@ -13,23 +13,33 @@ export interface User {
   level_points: number;
   is_blocked: boolean;
   is_approved: boolean;
+  created_at?: any;
 }
 
 export interface Transaction {
-  id: number;
-  operator_id: number;
-  supplier_id: number;
+  id: string;
+  operator_id: string;
+  supplier_id: string;
   amount: number;
   supplier_fee: number;
   status: 'PENDING' | 'IN_USE' | 'COMPLETED';
   withdrawal_amount?: number;
   pix_key?: string;
-  created_at: string;
+  created_at: any;
   operator_name?: string;
   supplier_name?: string;
 }
 
 export type SecurityLevel = 'Bronze' | 'Prata' | 'Ouro' | 'Diamante';
+
+export interface Notification {
+  id: string;
+  type: 'PURCHASE' | 'WITHDRAWAL_COMPLETED' | 'WITHDRAWAL_FAILED' | 'SYSTEM';
+  message: string;
+  transactionId?: string;
+  created_at: any;
+  read: boolean;
+}
 
 export interface SystemSettings {
   cpf_price: number;
