@@ -7,12 +7,32 @@ export const getSecurityLevel = (points: number): SecurityLevel => {
   return 'Bronze';
 };
 
-export const getLevelColor = (level: SecurityLevel) => {
+export const getLevelStyles = (level: SecurityLevel) => {
   switch (level) {
-    case 'Bronze': return 'text-amber-700 bg-amber-50 border-amber-200';
-    case 'Prata': return 'text-slate-500 bg-slate-50 border-slate-200';
-    case 'Ouro': return 'text-yellow-600 bg-yellow-50 border-yellow-200';
-    case 'Diamante': return 'text-cyan-600 bg-cyan-50 border-cyan-200';
+    case 'Bronze': return {
+      text: 'text-amber-500',
+      bg: 'bg-amber-500',
+      lightBg: 'bg-amber-500/10',
+      border: 'border-amber-500/20'
+    };
+    case 'Prata': return {
+      text: 'text-slate-400',
+      bg: 'bg-slate-400',
+      lightBg: 'bg-slate-400/10',
+      border: 'border-slate-400/20'
+    };
+    case 'Ouro': return {
+      text: 'text-yellow-500',
+      bg: 'bg-yellow-500',
+      lightBg: 'bg-yellow-500/10',
+      border: 'border-yellow-500/20'
+    };
+    case 'Diamante': return {
+      text: 'text-brand-green',
+      bg: 'bg-brand-green',
+      lightBg: 'bg-brand-green/10',
+      border: 'border-brand-green/20'
+    };
   }
 };
 
