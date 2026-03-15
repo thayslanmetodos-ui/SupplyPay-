@@ -1,0 +1,5 @@
+{
+  "name": "SupplyPay",
+  "description": "Fintech platform for supplier CPF management and operator transactions.",
+  "requestFramePermissions": []
+}
