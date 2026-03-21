@@ -9,10 +9,11 @@ import {
   signInWithPopup,
   updateProfile
 } from 'firebase/auth';
-import { doc, setDoc, getDoc, serverTimestamp } from 'firebase/firestore';
+import { doc, setDoc, getDoc, updateDoc, serverTimestamp } from 'firebase/firestore';
 import { handleFirestoreError, OperationType } from '../utils/firestoreErrorHandler';
-import { User, Mail, Lock, Eye, EyeOff, Check, LayoutGrid, Chrome, Briefcase, ArrowLeft, ShieldCheck, Zap } from 'lucide-react';
+import { User, Mail, Lock, Eye, EyeOff, Check, LayoutGrid, Chrome, Briefcase, ArrowLeft, ShieldCheck, Zap, X } from 'lucide-react';
 import { UserRole } from '../types';
+import { triggerEmail } from '../services/emailTriggerService';
 
 interface AuthPageProps {
   mode: 'login' | 'signup';
@@ -38,12 +39,44 @@ export default function AuthPage({ mode: initialMode }: AuthPageProps) {
   const [loading, setLoading] = useState(false);
   const [acceptedTerms, setAcceptedTerms] = useState(false);
 
+  const [showInfoForm, setShowInfoForm] = useState(false);
+  const [showResetModal, setShowResetModal] = useState(false);
+  const [resetEmail, setResetEmail] = useState('');
+  const [resetLoading, setResetLoading] = useState(false);
+  const [resetSuccess, setResetSuccess] = useState(false);
+  const [tempUser, setTempUser] = useState<any>(null);
+
+  const handleResetPassword = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!resetEmail) return;
+    setResetLoading(true);
+    try {
+      await triggerEmail('password-reset', { email: resetEmail });
+      setResetSuccess(true);
+      setTimeout(() => {
+        setShowResetModal(false);
+        setResetSuccess(false);
+        setResetEmail('');
+      }, 3000);
+    } catch (err) {
+      setError('Erro ao enviar email de recuperação.');
+    } finally {
+      setResetLoading(false);
+    }
+  };
+
   const handleGoogleLogin = async () => {
     setLoading(true);
     setError('');
     try {
       const result = await signInWithPopup(auth, googleProvider);
       const user = result.user;
+      
+      const adminEmails = [
+        'suportethayslanbssns@gmail.com',
+        'supplypayorg@gmail.com'
+      ];
+      const isAdminEmail = adminEmails.includes(user.email || '');
       
       // Check if user exists in Firestore
       let userDoc;
@@ -55,43 +88,46 @@ export default function AuthPage({ mode: initialMode }: AuthPageProps) {
       }
       
       if (!userDoc.exists()) {
-        // If it's a new user via Google, we might need them to choose a role or default to supplier
-        // For this flow, let's assume they use the signup page if they want to choose a role
-        // or we default to supplier if they just click Google on login
-        const newUser = {
-          uid: user.uid,
-          email: user.email,
-          name: user.displayName || 'Usuário Google',
-          role: role, // Use current selected role
-          balance: 0,
-          level_points: 0,
-          is_blocked: false,
-          is_approved: role === 'admin' ? true : false,
-          created_at: serverTimestamp(),
-          status: 'OFF'
-        };
-        try {
+        if (isAdminEmail) {
+          const newUser = {
+            uid: user.uid,
+            email: user.email,
+            name: user.displayName || 'Admin',
+            role: 'admin',
+            balance: 0,
+            level_points: 0,
+            is_blocked: false,
+            is_approved: true,
+            created_at: serverTimestamp(),
+            last_login: serverTimestamp(),
+            status: 'OFF'
+          };
           await setDoc(doc(db, 'users', user.uid), newUser);
-        } catch (err) {
-          handleFirestoreError(err, OperationType.CREATE, `users/${user.uid}`);
-          return;
-        }
-        
-        if (newUser.role !== 'admin') {
-          setError('CONTA_CRIADA_PENDENTE');
-          setLoading(false);
-          return;
+          navigate('/admin');
+        } else {
+          setTempUser(user);
+          setShowInfoForm(true);
         }
       } else {
         const userData = userDoc.data();
-        if (userData.is_blocked) {
-          setError('Sua conta está bloqueada.');
-          await auth.signOut();
-          setLoading(false);
+        
+        // Force admin role if email matches
+        if (isAdminEmail && userData.role !== 'admin') {
+          await updateDoc(doc(db, 'users', user.uid), { 
+            role: 'admin', 
+            is_approved: true,
+            last_login: serverTimestamp()
+          });
+          navigate('/admin');
           return;
         }
-        if (!userData.is_approved && userData.role !== 'admin') {
-          setError('Sua conta está aguardando aprovação do administrador.');
+
+        await updateDoc(doc(db, 'users', user.uid), {
+          last_login: serverTimestamp()
+        });
+
+        if (userData.is_blocked) {
+          setError('Sua conta está bloqueada.');
           await auth.signOut();
           setLoading(false);
           return;
@@ -106,94 +142,36 @@ export default function AuthPage({ mode: initialMode }: AuthPageProps) {
     }
   };
 
-  const handleSubmit = async (e: React.FormEvent) => {
+  const handleInfoSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    setError('');
-    
-    if (!isLogin && password !== confirmPassword) {
-      return setError('As senhas não coincidem');
-    }
-
-    if (!isLogin && !acceptedTerms) {
-      return setError('Você deve aceitar os termos de serviço');
-    }
-
+    if (!tempUser) return;
     setLoading(true);
     try {
-      if (isLogin) {
-        const userCredential = await signInWithEmailAndPassword(auth, email, password);
-        const user = userCredential.user;
-        
-        let userDoc;
-        try {
-          userDoc = await getDoc(doc(db, 'users', user.uid));
-        } catch (err) {
-          handleFirestoreError(err, OperationType.GET, `users/${user.uid}`);
-          return;
-        }
+      const newUser = {
+        uid: tempUser.uid,
+        email: tempUser.email,
+        name: tempUser.displayName || name,
+        role: role,
+        whatsapp,
+        cpf: role === 'supplier' ? cpf : null,
+        bank: role === 'supplier' ? bank : null,
+        balance: 0,
+        level_points: 0,
+        is_blocked: false,
+        is_approved: false, // Needs admin approval based on phone
+        created_at: serverTimestamp(),
+        last_login: serverTimestamp(),
+        status: 'OFF'
+      };
 
-        if (userDoc.exists()) {
-          const userData = userDoc.data();
-          if (userData.is_blocked) {
-            setError('Sua conta está bloqueada.');
-            await auth.signOut();
-            return;
-          }
-          if (!userData.is_approved && userData.role !== 'admin') {
-            setError('Sua conta está aguardando aprovação do administrador.');
-            await auth.signOut();
-            return;
-          }
-          navigate(userData.role === 'admin' ? '/admin' : `/${userData.role}`);
-        } else {
-          setError('Perfil de usuário não encontrado.');
-          await auth.signOut();
-        }
-      } else {
-        const userCredential = await createUserWithEmailAndPassword(auth, email, password);
-        const user = userCredential.user;
-        
-        await updateProfile(user, { displayName: name });
+      await setDoc(doc(db, 'users', tempUser.uid), newUser);
+      
+      // Trigger registration email
+      await triggerEmail('registration', { email: tempUser.email, name: newUser.name });
 
-        const newUser = {
-          uid: user.uid,
-          email: user.email,
-          name: name,
-          role: role,
-          whatsapp,
-          cpf: role === 'supplier' ? cpf : null,
-          bank: role === 'supplier' ? bank : null,
-          balance: 0,
-          level_points: 0,
-          is_blocked: false,
-          is_approved: role === 'admin' ? true : false,
-          created_at: serverTimestamp(),
-          status: 'OFF'
-        };
-
-        try {
-          await setDoc(doc(db, 'users', user.uid), newUser);
-        } catch (err) {
-          handleFirestoreError(err, OperationType.CREATE, `users/${user.uid}`);
-          return;
-        }
-
-        if (role !== 'admin') {
-          setError('CONTA_CRIADA_PENDENTE');
-          await auth.signOut();
-        } else {
-          navigate('/admin');
-        }
-      }
-    } catch (err: any) {
-      console.error(err);
-      if (err.code === 'auth/email-already-in-use') {
-        setError('Este email já está em uso.');
-      } else if (err.code === 'auth/wrong-password' || err.code === 'auth/user-not-found') {
-        setError('Email ou senha incorretos.');
-      } else {
-        setError(err.message || 'Ocorreu um erro');
-      }
+      navigate(`/${role}`);
+    } catch (err) {
+      handleFirestoreError(err, OperationType.CREATE, `users/${tempUser.uid}`);
     } finally {
       setLoading(false);
     }
@@ -215,16 +193,6 @@ export default function AuthPage({ mode: initialMode }: AuthPageProps) {
           </div>
           <span className="text-2xl font-black text-white tracking-tighter">SupplyPay</span>
         </div>
-        <div className="hidden md:flex items-center gap-8 text-sm font-semibold text-slate-400">
-          <Link to="/" className="hover:text-brand-green transition-colors">Home</Link>
-          <Link to="/" className="hover:text-brand-green transition-colors">Soluções</Link>
-          <button 
-            onClick={() => navigate(isLogin ? `/signup/${role}` : '/login')}
-            className="bg-white/5 border border-white/10 text-white px-6 py-2.5 rounded-xl hover:bg-white/10 transition-all backdrop-blur-md"
-          >
-            {isLogin ? 'Criar Conta' : 'Entrar'}
-          </button>
-        </div>
       </nav>
 
       <div className="relative z-10 flex-1 flex items-center justify-center p-6">
@@ -234,223 +202,192 @@ export default function AuthPage({ mode: initialMode }: AuthPageProps) {
           className="max-w-[440px] w-full"
         >
           <div className="bg-brand-card/50 backdrop-blur-2xl border border-brand-border p-8 md:p-10 rounded-[32px] shadow-2xl space-y-8">
-            <div className="space-y-3">
-              <div className="flex items-center gap-2">
-                <span className="text-[10px] font-bold text-brand-green uppercase tracking-[0.2em] bg-brand-green/10 px-3 py-1 rounded-full border border-brand-green/20">
-                  {role === 'operator' ? 'Portal Operador' : 'Portal Fornecedor'}
-                </span>
-              </div>
-              <h2 className="text-4xl font-bold text-white tracking-tight">
-                {isLogin ? 'Bem-vindo' : 'Começar Agora'}
-              </h2>
-              <p className="text-slate-400 text-sm leading-relaxed">
-                {isLogin 
-                  ? 'Acesse sua conta para gerenciar suas operações financeiras com segurança.' 
-                  : 'Crie sua conta em segundos e comece a operar na maior rede de pagamentos.'}
-              </p>
-            </div>
-
             <AnimatePresence mode="wait">
-              {error && (
+              {!showInfoForm ? (
                 <motion.div 
-                  initial={{ opacity: 0, height: 0 }}
-                  animate={{ opacity: 1, height: 'auto' }}
-                  exit={{ opacity: 0, height: 0 }}
-                  className={`p-4 rounded-2xl text-xs font-medium border ${error === 'CONTA_CRIADA_PENDENTE' ? 'bg-brand-green/10 border-brand-green/30 text-brand-green' : 'bg-red-500/10 border-red-500/30 text-red-400'}`}
+                  key="login"
+                  initial={{ opacity: 0, x: -20 }}
+                  animate={{ opacity: 1, x: 0 }}
+                  exit={{ opacity: 0, x: 20 }}
+                  className="space-y-8"
                 >
-                  <div className="flex gap-3">
-                    <ShieldCheck className="w-4 h-4 shrink-0" />
-                    <span>
-                      {error === 'CONTA_CRIADA_PENDENTE' 
-                        ? 'Conta criada! Aguarde a aprovação do administrador para acessar.' 
-                        : error}
-                    </span>
+                  <div className="space-y-3">
+                    <h2 className="text-4xl font-bold text-white tracking-tight">Bem-vindo</h2>
+                    <p className="text-slate-400 text-sm leading-relaxed">
+                      Acesse sua conta usando sua conta Google para gerenciar suas operações.
+                    </p>
                   </div>
+
+                  {error && (
+                    <div className="p-4 rounded-2xl text-xs font-medium border bg-red-500/10 border-red-500/30 text-red-400 flex gap-3">
+                      <ShieldCheck className="w-4 h-4 shrink-0" />
+                      <span>{error}</span>
+                    </div>
+                  )}
+
+                  <button 
+                    onClick={handleGoogleLogin}
+                    disabled={loading}
+                    className="w-full flex items-center justify-center gap-4 bg-white text-black py-4 rounded-2xl font-black text-sm uppercase tracking-widest hover:bg-slate-200 transition-all shadow-xl disabled:opacity-50"
+                  >
+                    <Chrome className="w-6 h-6" />
+                    {loading ? 'Entrando...' : 'Entrar com Google'}
+                  </button>
+
+                  <div className="text-center">
+                    <button 
+                      onClick={() => setShowResetModal(true)}
+                      className="text-[10px] font-black uppercase tracking-widest text-slate-500 hover:text-brand-green transition-colors"
+                    >
+                      Esqueceu sua senha?
+                    </button>
+                  </div>
+                </motion.div>
+              ) : (
+                <motion.div 
+                  key="info"
+                  initial={{ opacity: 0, x: 20 }}
+                  animate={{ opacity: 1, x: 0 }}
+                  exit={{ opacity: 0, x: -20 }}
+                  className="space-y-6"
+                >
+                  <div className="space-y-2">
+                    <h2 className="text-2xl font-bold text-white">Quase lá!</h2>
+                    <p className="text-slate-400 text-sm">Precisamos de mais algumas informações para completar seu perfil.</p>
+                  </div>
+
+                  <form onSubmit={handleInfoSubmit} className="space-y-4">
+                    <div className="space-y-2">
+                      <label className="text-xs font-bold text-slate-500 uppercase tracking-widest">Tipo de Conta</label>
+                      <div className="grid grid-cols-2 gap-3">
+                        <button
+                          type="button"
+                          onClick={() => setRole('supplier')}
+                          className={`py-3 rounded-xl border text-xs font-bold transition-all ${role === 'supplier' ? 'bg-brand-green border-brand-green text-black' : 'bg-brand-input border-brand-border text-slate-400'}`}
+                        >
+                          Fornecedor
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setRole('operator')}
+                          className={`py-3 rounded-xl border text-xs font-bold transition-all ${role === 'operator' ? 'bg-brand-green border-brand-green text-black' : 'bg-brand-input border-brand-border text-slate-400'}`}
+                        >
+                          Operador
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="space-y-2">
+                      <label className="text-xs font-bold text-slate-500 uppercase tracking-widest">WhatsApp</label>
+                      <input
+                        type="tel"
+                        required
+                        value={whatsapp}
+                        onChange={(e) => setWhatsapp(e.target.value)}
+                        className="w-full bg-brand-input border border-brand-border rounded-2xl py-4 px-4 text-white focus:outline-none focus:border-brand-green/50 transition-all"
+                        placeholder="+55 (00) 00000-0000"
+                      />
+                    </div>
+
+                    {role === 'supplier' && (
+                      <>
+                        <div className="space-y-2">
+                          <label className="text-xs font-bold text-slate-500 uppercase tracking-widest">CPF</label>
+                          <input
+                            type="text"
+                            required
+                            value={cpf}
+                            onChange={(e) => setCpf(e.target.value)}
+                            className="w-full bg-brand-input border border-brand-border rounded-2xl py-4 px-4 text-white focus:outline-none focus:border-brand-green/50 transition-all"
+                            placeholder="000.000.000-00"
+                          />
+                        </div>
+                        <div className="space-y-2">
+                          <label className="text-xs font-bold text-slate-500 uppercase tracking-widest">Banco / Chave Pix</label>
+                          <input
+                            type="text"
+                            required
+                            value={bank}
+                            onChange={(e) => setBank(e.target.value)}
+                            className="w-full bg-brand-input border border-brand-border rounded-2xl py-4 px-4 text-white focus:outline-none focus:border-brand-green/50 transition-all"
+                            placeholder="Nome do banco ou Chave Pix"
+                          />
+                        </div>
+                      </>
+                    )}
+
+                    <button
+                      type="submit"
+                      disabled={loading}
+                      className="w-full bg-brand-green text-black py-4 rounded-2xl font-black text-sm uppercase tracking-widest hover:bg-brand-green-dark transition-all shadow-xl disabled:opacity-50"
+                    >
+                      {loading ? 'Salvando...' : 'Concluir Cadastro'}
+                    </button>
+                  </form>
                 </motion.div>
               )}
             </AnimatePresence>
-
-            <form onSubmit={handleSubmit} className="space-y-6">
-              {!isLogin && (
-                <div className="space-y-2">
-                  <label className="text-xs font-bold text-slate-500 uppercase tracking-widest ml-1">Nome Completo</label>
-                  <div className="relative group">
-                    <User className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-600 group-focus-within:text-brand-green transition-colors" />
-                    <input
-                      type="text"
-                      required
-                      value={name}
-                      onChange={(e) => setName(e.target.value)}
-                      className="w-full bg-brand-input border border-brand-border rounded-2xl py-4 pl-12 pr-4 text-white placeholder:text-slate-700 focus:outline-none focus:border-brand-green/50 focus:ring-4 focus:ring-brand-green/5 transition-all"
-                      placeholder="João Silva"
-                    />
-                  </div>
-                </div>
-              )}
-
-              <div className="space-y-2">
-                <label className="text-xs font-bold text-slate-500 uppercase tracking-widest ml-1">Email Profissional</label>
-                <div className="relative group">
-                  <Mail className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-600 group-focus-within:text-brand-green transition-colors" />
-                  <input
-                    type="email"
-                    required
-                    value={email}
-                    onChange={(e) => setEmail(e.target.value)}
-                    className="w-full bg-brand-input border border-brand-border rounded-2xl py-4 pl-12 pr-4 text-white placeholder:text-slate-700 focus:outline-none focus:border-brand-green/50 focus:ring-4 focus:ring-brand-green/5 transition-all"
-                    placeholder="exemplo@gmail.com"
-                  />
-                </div>
-              </div>
-
-              {!isLogin && (
-                <div className="space-y-2">
-                  <label className="text-xs font-bold text-slate-500 uppercase tracking-widest ml-1">WhatsApp</label>
-                  <div className="relative group">
-                    <div className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-600 font-bold text-sm group-focus-within:text-brand-green transition-colors">
-                      +55
-                    </div>
-                    <input
-                      type="tel"
-                      required
-                      value={whatsapp}
-                      onChange={(e) => setWhatsapp(e.target.value)}
-                      className="w-full bg-brand-input border border-brand-border rounded-2xl py-4 pl-12 pr-4 text-white placeholder:text-slate-700 focus:outline-none focus:border-brand-green/50 focus:ring-4 focus:ring-brand-green/5 transition-all"
-                      placeholder="(00) 00000-0000"
-                    />
-                  </div>
-                </div>
-              )}
-
-              {!isLogin && role === 'supplier' && (
-                <div className="grid grid-cols-2 gap-4">
-                  <div className="space-y-2">
-                    <label className="text-xs font-bold text-slate-500 uppercase tracking-widest ml-1">CPF</label>
-                    <input
-                      type="text"
-                      required
-                      value={cpf}
-                      onChange={(e) => setCpf(e.target.value)}
-                      className="w-full bg-brand-input border border-brand-border rounded-2xl py-4 px-4 text-white placeholder:text-slate-700 focus:outline-none focus:border-brand-green/50 focus:ring-4 focus:ring-brand-green/5 transition-all"
-                      placeholder="000.000.000-00"
-                    />
-                  </div>
-                  <div className="space-y-2">
-                    <label className="text-xs font-bold text-slate-500 uppercase tracking-widest ml-1">Banco</label>
-                    <input
-                      type="text"
-                      required
-                      value={bank}
-                      onChange={(e) => setBank(e.target.value)}
-                      className="w-full bg-brand-input border border-brand-border rounded-2xl py-4 px-4 text-white placeholder:text-slate-700 focus:outline-none focus:border-brand-green/50 focus:ring-4 focus:ring-brand-green/5 transition-all"
-                      placeholder="Nome do banco"
-                    />
-                  </div>
-                </div>
-              )}
-
-              <div className="space-y-2">
-                <div className="flex justify-between items-center ml-1">
-                  <label className="text-xs font-bold text-slate-500 uppercase tracking-widest">Senha de Acesso</label>
-                  {isLogin && <button type="button" className="text-[10px] font-bold text-brand-green hover:underline">Esqueceu?</button>}
-                </div>
-                <div className="relative group">
-                  <Lock className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-600 group-focus-within:text-brand-green transition-colors" />
-                  <input
-                    type={showPassword ? "text" : "password"}
-                    required
-                    value={password}
-                    onChange={(e) => setPassword(e.target.value)}
-                    className="w-full bg-brand-input border border-brand-border rounded-2xl py-4 pl-12 pr-12 text-white placeholder:text-slate-700 focus:outline-none focus:border-brand-green/50 focus:ring-4 focus:ring-brand-green/5 transition-all"
-                    placeholder="••••••••"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => setShowPassword(!showPassword)}
-                    className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-600 hover:text-slate-400 transition-colors"
-                  >
-                    {showPassword ? <EyeOff className="w-5 h-5" /> : <Eye className="w-5 h-5" />}
-                  </button>
-                </div>
-              </div>
-
-              {!isLogin && (
-                <>
-                  <div className="space-y-2">
-                    <label className="text-xs font-bold text-slate-500 uppercase tracking-widest ml-1">Confirmar Senha</label>
-                    <div className="relative group">
-                      <Lock className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-600 group-focus-within:text-brand-green transition-colors" />
-                      <input
-                        type="password"
-                        required
-                        value={confirmPassword}
-                        onChange={(e) => setConfirmPassword(e.target.value)}
-                        className="w-full bg-brand-input border border-brand-border rounded-2xl py-4 pl-12 pr-4 text-white placeholder:text-slate-700 focus:outline-none focus:border-brand-green/50 focus:ring-4 focus:ring-brand-green/5 transition-all"
-                        placeholder="••••••••"
-                      />
-                    </div>
-                  </div>
-
-                  <div className="flex items-center gap-3 pt-2">
-                    <button
-                      type="button"
-                      onClick={() => setAcceptedTerms(!acceptedTerms)}
-                      className={`w-6 h-6 rounded-lg border flex items-center justify-center transition-all ${acceptedTerms ? 'bg-brand-green border-brand-green shadow-lg shadow-brand-green/20' : 'border-brand-border bg-brand-input'}`}
-                    >
-                      {acceptedTerms && <Check className="w-4 h-4 text-white" />}
-                    </button>
-                    <span className="text-[11px] text-slate-500 leading-tight">
-                      Eu aceito os <Link to="/" className="text-brand-green font-bold hover:underline">Termos de Serviço</Link> e <Link to="/" className="text-brand-green font-bold hover:underline">Política de Privacidade</Link>.
-                    </span>
-                  </div>
-                </>
-              )}
-
-              <button
-                type="submit"
-                disabled={loading}
-                className="w-full bg-brand-green text-black py-4 rounded-2xl font-black text-sm uppercase tracking-widest hover:bg-brand-green-dark transition-all shadow-xl shadow-brand-green/20 disabled:opacity-50 active:scale-[0.98]"
-              >
-                {loading ? 'Processando...' : (isLogin ? 'Entrar Agora' : 'Finalizar Cadastro')}
-              </button>
-            </form>
-
-            <div className="relative py-2">
-              <div className="absolute inset-0 flex items-center">
-                <div className="w-full border-t border-brand-border"></div>
-              </div>
-              <div className="relative flex justify-center text-[10px] uppercase tracking-[0.3em]">
-                <span className="bg-brand-card/50 backdrop-blur-md px-4 text-slate-600 font-bold">Ou continue com</span>
-              </div>
-            </div>
-
-            <div className="grid grid-cols-2 gap-4">
-              <button 
-                onClick={handleGoogleLogin}
-                disabled={loading}
-                className="flex items-center justify-center gap-3 bg-brand-input border border-brand-border py-3.5 rounded-2xl hover:bg-brand-border transition-all text-xs font-bold text-white group disabled:opacity-50"
-              >
-                <Chrome className="w-4 h-4 text-brand-green group-hover:scale-110 transition-transform" /> Google
-              </button>
-              <button className="flex items-center justify-center gap-3 bg-brand-input border border-brand-border py-3.5 rounded-2xl hover:bg-brand-border transition-all text-xs font-bold text-white group">
-                <Briefcase className="w-4 h-4 text-brand-green group-hover:scale-110 transition-transform" /> Corp ID
-              </button>
-            </div>
-
-            <p className="text-center text-xs text-slate-500 font-medium">
-              {isLogin ? 'Não possui uma conta?' : 'Já possui uma conta?'} {' '}
-              <button 
-                onClick={() => navigate(isLogin ? `/signup/${role}` : '/login')}
-                className="text-brand-green font-bold hover:underline"
-              >
-                {isLogin ? 'Criar conta gratuita' : 'Acessar minha conta'}
-              </button>
-            </p>
           </div>
         </motion.div>
       </div>
       
-      {/* Footer */}
+      <AnimatePresence>
+        {showResetModal && (
+          <div className="fixed inset-0 z-[100] flex items-center justify-center p-6">
+            <motion.div 
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setShowResetModal(false)}
+              className="absolute inset-0 bg-black/80 backdrop-blur-sm"
+            />
+            <motion.div 
+              initial={{ opacity: 0, scale: 0.9, y: 20 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.9, y: 20 }}
+              className="relative w-full max-w-md bg-brand-card border border-brand-border rounded-[32px] p-8 space-y-6 shadow-2xl"
+            >
+              <div className="flex items-center justify-between">
+                <h3 className="text-xl font-black uppercase tracking-tight">Recuperar Senha</h3>
+                <button onClick={() => setShowResetModal(false)} className="p-2 hover:bg-white/5 rounded-full transition-colors">
+                  <X className="w-6 h-6" />
+                </button>
+              </div>
+
+              {resetSuccess ? (
+                <div className="p-6 text-center space-y-4">
+                  <div className="w-16 h-16 bg-brand-green/20 rounded-full flex items-center justify-center mx-auto text-brand-green">
+                    <Check className="w-8 h-8" />
+                  </div>
+                  <p className="text-sm text-slate-400">Email de recuperação enviado com sucesso!</p>
+                </div>
+              ) : (
+                <form onSubmit={handleResetPassword} className="space-y-4">
+                  <div className="space-y-2">
+                    <label className="text-[10px] font-black uppercase tracking-widest text-slate-500">Seu Email</label>
+                    <input 
+                      type="email"
+                      required
+                      value={resetEmail}
+                      onChange={(e) => setResetEmail(e.target.value)}
+                      placeholder="email@exemplo.com"
+                      className="w-full bg-brand-input border border-brand-border rounded-2xl p-4 text-sm focus:outline-none focus:border-brand-green transition-colors"
+                    />
+                  </div>
+                  <button 
+                    type="submit"
+                    disabled={resetLoading}
+                    className="w-full bg-brand-green text-black py-4 rounded-2xl font-black text-xs uppercase tracking-widest flex items-center justify-center gap-2 hover:bg-brand-green-dark transition-all shadow-xl shadow-brand-green/20 disabled:opacity-50"
+                  >
+                    {resetLoading ? 'Enviando...' : 'Enviar Email de Recuperação'}
+                  </button>
+                </form>
+              )}
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
       <footer className="relative z-10 py-8 px-8 text-center">
         <p className="text-[10px] text-slate-600 font-bold uppercase tracking-[0.4em]">
           &copy; 2026 SupplyPay Gateway &bull; Secure &bull; Fast &bull; Reliable

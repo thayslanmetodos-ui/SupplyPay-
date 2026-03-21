@@ -36,6 +36,25 @@ service cloud.firestore {
     //   - type: string (required)
     //   - created_at: timestamp (required)
     //
+    // Collection: chat_rooms
+    // Fields:
+    //   - uid: string (required)
+    //   - userName: string (required)
+    //   - userRole: string (required)
+    //   - status: string (required, ['OPEN', 'CLOSED'])
+    //   - lastMessage: string (optional)
+    //   - updatedAt: timestamp (optional)
+    //   - createdAt: timestamp (required)
+    //
+    // Collection: chat_rooms/{roomId}/messages
+    // Fields:
+    //   - roomId: string (required)
+    //   - senderId: string (required)
+    //   - senderName: string (required)
+    //   - senderRole: string (required)
+    //   - text: string (required)
+    //   - timestamp: timestamp (required)
+    //
     // ===============================================================
 
     // ===============================================================
@@ -49,22 +68,29 @@ service cloud.firestore {
       return isAuthenticated() && request.auth.uid == userId;
     }
 
+    function isOperator() {
+      return isAuthenticated() && 
+        (exists(/databases/$(database)/documents/users/$(request.auth.uid)) && 
+         get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'operator');
+    }
+
     function isAdmin() {
       return isAuthenticated() && 
-        (get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin' ||
-         (request.auth.token.email == "suportethayslanbssns@gmail.com" && request.auth.token.email_verified == true));
+        (
+          (request.auth.token.email in [
+            "suportethayslanbssns@gmail.com",
+            "supplypayorg@gmail.com"
+          ] && request.auth.token.email_verified == true) ||
+          (exists(/databases/$(database)/documents/users/$(request.auth.uid)) && 
+           get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin')
+        );
     }
 
     function isValidUser(data) {
-      return data.keys().hasAll(['uid', 'email', 'name', 'role', 'balance', 'level_points', 'is_blocked', 'is_approved']) &&
-             data.uid is string && data.uid.size() > 0 &&
-             data.email is string && data.email.size() < 100 &&
-             data.name is string && data.name.size() > 0 && data.name.size() < 100 &&
-             data.role in ['operator', 'supplier', 'admin'] &&
-             data.balance is number &&
-             data.level_points is number &&
-             data.is_blocked is bool &&
-             data.is_approved is bool;
+      return data.uid is string &&
+             data.email is string &&
+             data.name is string &&
+             data.role in ['operator', 'supplier', 'admin'];
     }
 
     // ===============================================================
@@ -72,17 +98,45 @@ service cloud.firestore {
     // ===============================================================
 
     match /users/{userId} {
-      allow read: if isOwner(userId) || isAdmin();
-      allow create: if isAuthenticated() && isValidUser(request.resource.data) && 
-                      (isOwner(userId) && request.resource.data.role != 'admin' || isAdmin());
-      allow update: if isAuthenticated() && isValidUser(request.resource.data) && 
-                      (isOwner(userId) && 
-                       request.resource.data.role == resource.data.role && 
-                       request.resource.data.is_approved == resource.data.is_approved &&
-                       request.resource.data.is_blocked == resource.data.is_blocked &&
-                       request.resource.data.balance == resource.data.balance &&
-                       request.resource.data.level_points == resource.data.level_points
-                       || isAdmin());
+      // Allow users to read their own profile, admins to read everything,
+      // and operators to read suppliers.
+      allow read: if isOwner(userId) || isAdmin() || 
+                    (isAuthenticated() && 
+                     resource != null &&
+                     (
+                       (resource.data.role == 'supplier' && (isOperator() || (resource.data.status == 'ON' && resource.data.is_blocked == false))) ||
+                       (resource.data.role == 'operator')
+                     )
+                    );
+      
+      allow create: if isAuthenticated() && 
+                      (
+                        (isOwner(userId) && isValidUser(request.resource.data) && request.resource.data.role != 'admin') || 
+                        isAdmin()
+                      );
+      
+      allow update: if isAuthenticated() && 
+                      (
+                        isAdmin() || 
+                        (isOwner(userId) && 
+                         // Ensure sensitive fields are not modified by the user
+                         (!('role' in request.resource.data) || request.resource.data.role == resource.data.role) && 
+                         (!('is_approved' in request.resource.data) || request.resource.data.is_approved == resource.data.is_approved) &&
+                         (!('is_blocked' in request.resource.data) || request.resource.data.is_blocked == resource.data.is_blocked) &&
+                         (!('balance' in request.resource.data) || request.resource.data.balance == resource.data.balance) &&
+                         (!('level_points' in request.resource.data) || request.resource.data.level_points == resource.data.level_points)) ||
+                        // Allow operators to update supplier status when completing transactions
+                        (get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'operator' &&
+                         resource.data.role == 'supplier' &&
+                         request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status']))
+                      );
+    }
+
+    match /withdrawal_requests/{requestId} {
+      allow read: if isAuthenticated() && (resource.data.uid == request.auth.uid || isAdmin());
+      allow create: if isAuthenticated() && request.resource.data.uid == request.auth.uid;
+      allow update: if isAdmin();
+      allow delete: if isAdmin();
     }
 
     match /transactions/{transactionId} {
@@ -101,6 +155,28 @@ service cloud.firestore {
       );
     }
 
+    function isValidMessage(data) {
+      return data.transactionId is string &&
+             data.text is string &&
+             data.text.size() < 1000 &&
+             data.sender_id is string &&
+             data.sender_name is string &&
+             data.sender_role is string &&
+             data.created_at is timestamp;
+    }
+
+    match /messages/{messageId} {
+      allow read: if isAuthenticated() && (
+        resource.data.sender_id == request.auth.uid ||
+        resource.data.operator_id == request.auth.uid ||
+        resource.data.supplier_id == request.auth.uid ||
+        isAdmin()
+      );
+      allow create: if isAuthenticated() && 
+        isValidMessage(request.resource.data) && 
+        (request.resource.data.sender_id == request.auth.uid || isAdmin());
+    }
+
     match /notifications/{notificationId} {
       allow read: if isOwner(resource.data.uid) || isAdmin();
       allow create: if isAuthenticated(); // Operators can notify suppliers
@@ -109,6 +185,26 @@ service cloud.firestore {
     }
 
     match /settings/{settingId} {
+      allow read: if isAuthenticated();
+      allow write: if isAdmin();
+    }
+
+    match /chat_rooms/{roomId} {
+      allow read: if isAuthenticated() && (resource.data.uid == request.auth.uid || isAdmin());
+      allow create: if isAuthenticated() && (request.resource.data.uid == request.auth.uid || isAdmin());
+      allow update: if isAuthenticated() && (resource.data.uid == request.auth.uid || isAdmin());
+      
+      match /messages/{messageId} {
+        allow read: if isAuthenticated() && (get(/databases/$(database)/documents/chat_rooms/$(roomId)).data.uid == request.auth.uid || isAdmin());
+        allow create: if isAuthenticated() && (get(/databases/$(database)/documents/chat_rooms/$(roomId)).data.uid == request.auth.uid || isAdmin());
+      }
+    }
+
+    match /sent_emails/{emailId} {
+      allow read, write: if isAdmin();
+    }
+
+    match /email_templates/{templateId} {
       allow read: if isAuthenticated();
       allow write: if isAdmin();
     }

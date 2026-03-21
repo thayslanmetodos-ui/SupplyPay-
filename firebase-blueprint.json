@@ -39,19 +39,48 @@
       },
       "required": ["operator_id", "supplier_id", "amount", "status", "created_at"]
     },
-    "Notification": {
-      "title": "Notification",
+    "AppNotification": {
+      "title": "App Notification",
       "description": "User notification",
       "type": "object",
       "properties": {
         "uid": { "type": "string" },
         "message": { "type": "string" },
-        "type": { "type": "string", "enum": ["PURCHASE", "WITHDRAWAL_COMPLETED", "WITHDRAWAL_FAILED", "SYSTEM"] },
+        "type": { "type": "string", "enum": ["PURCHASE", "WITHDRAWAL_COMPLETED", "WITHDRAWAL_FAILED", "SYSTEM", "ADMIN_MSG"] },
         "transactionId": { "type": "string" },
         "created_at": { "type": "string", "format": "date-time" },
         "read": { "type": "boolean" }
       },
       "required": ["uid", "message", "type", "created_at"]
+    },
+    "ChatRoom": {
+      "title": "Chat Room",
+      "description": "A chat session between a user and support",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "description": "User UID" },
+        "userName": { "type": "string" },
+        "userRole": { "type": "string" },
+        "status": { "type": "string", "enum": ["OPEN", "CLOSED"] },
+        "lastMessage": { "type": "string" },
+        "updatedAt": { "type": "string", "format": "date-time" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "userName", "userRole", "status", "createdAt"]
+    },
+    "ChatMessage": {
+      "title": "Chat Message",
+      "description": "A single message in a chat room",
+      "type": "object",
+      "properties": {
+        "roomId": { "type": "string" },
+        "senderId": { "type": "string" },
+        "senderName": { "type": "string" },
+        "senderRole": { "type": "string" },
+        "text": { "type": "string" },
+        "timestamp": { "type": "string", "format": "date-time" }
+      },
+      "required": ["roomId", "senderId", "senderName", "senderRole", "text", "timestamp"]
     }
   },
   "firestore": {
@@ -64,8 +93,43 @@
       "description": "Transaction records"
     },
     "/notifications/{notificationId}": {
-      "schema": "Notification",
+      "schema": "AppNotification",
       "description": "User notifications"
+    },
+    "/chat_rooms/{roomId}": {
+      "schema": "ChatRoom",
+      "description": "Chat sessions"
+    },
+    "/chat_rooms/{roomId}/messages/{messageId}": {
+      "schema": "ChatMessage",
+      "description": "Messages in a chat session"
+    },
+    "/sent_emails/{emailId}": {
+      "schema": {
+        "title": "Sent Email",
+        "type": "object",
+        "properties": {
+          "to": { "type": "string" },
+          "subject": { "type": "string" },
+          "html": { "type": "string" },
+          "type": { "type": "string" },
+          "sent_at": { "type": "string", "format": "date-time" },
+          "status": { "type": "string" },
+          "message_id": { "type": "string" }
+        }
+      },
+      "description": "Logs of sent emails"
+    },
+    "/email_templates/{templateId}": {
+      "schema": {
+        "title": "Email Template",
+        "type": "object",
+        "properties": {
+          "subject": { "type": "string" },
+          "html": { "type": "string" }
+        }
+      },
+      "description": "Customizable email templates"
     }
   }
 }

@@ -7,6 +7,7 @@ import SupplierDashboard from './pages/SupplierDashboard';
 import OperatorDashboard from './pages/OperatorDashboard';
 import AdminDashboard from './pages/AdminDashboard';
 import { UserRole } from './types';
+import NotificationHandler from './components/NotificationHandler';
 
 const ProtectedRoute = ({ children, role }: { children: React.ReactNode, role?: UserRole }) => {
   const { user, loading } = useAuth();
@@ -21,6 +22,7 @@ const ProtectedRoute = ({ children, role }: { children: React.ReactNode, role?: 
 export default function App() {
   return (
     <AuthProvider>
+      <NotificationHandler />
       <Router>
         <Routes>
           <Route path="/" element={<LandingPage />} />
